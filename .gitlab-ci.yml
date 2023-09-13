@@ -1,0 +1,97 @@
+stages:
+  - deploy
+  - merge-request
+
+.deploy:
+  stage: deploy
+  tags:
+    - msb-fe
+  variables:
+    DEPLOY_USER: "yelei gaodongyu zhangyelei opserver"
+    PODS: 1
+  script:
+    # 打包test环境
+    - echo $PATH
+    - rm -rf dist node_modules
+    - ./mvnw versions:set -DartifactId=msb-admin-suggestions -DnewVersion=$(date "+%Y%m%d%H%M%S")
+    - npm config set registry http://fusion.meishubao.com:9001/
+    - npm set progress=false
+    - npm ci
+    - npm run build:${BASE_VERSION}
+    - export KUBERNETES_NAMESPACE=${KUBERNETES_NAMESPACE_VALUE}
+    - ./mvnw deploy
+    - "envsubst < target/classes/META-INF/jkube/kubernetes/msb-admin-suggestions-service.yml | sed 's/app: msb-admin-suggestions/app: '${VERSION_NAME}'/g'  | ${KUBECTL_CLI_OPTS_CONFIG} apply -f - -n ${KUBERNETES_NAMESPACE}"
+    - "envsubst < target/classes/META-INF/jkube/kubernetes.yml | sed 's/name: msb-admin-suggestions/name: '${VERSION_NAME}'/g' | sed 's/replicas: 1/replicas: '${PODS}'/g' | sed 's/app: msb-admin-suggestions/app: '${VERSION_NAME}'/g' | sed 's/memory: 2048Mi/memory: 1024Mi/g' | sed 's/cpu: 1000m/cpu: 100m/g'  | ${KUBECTL_CLI_OPTS_CONFIG} apply -f - -n ${KUBERNETES_NAMESPACE}"
+  cache:
+    key: "$CI_PROJECT_NAME"
+    paths:
+      - node_modules/
+
+deploy:test:
+  extends: .deploy
+  variables:
+    PODS: 2
+    KUBERNETES_NAMESPACE_VALUE: 1v1-frontend-test
+    VERSION_NAME: msb-admin-suggestions-test
+    BASE_VERSION: test
+    KUBECTL_CLI_OPTS_CONFIG: "kubectl --kubeconfig=/home/gitlab-runner/vip-config"
+  only:
+    - test-sug
+  except:
+    - tags
+
+deploy:test_v2:
+  extends: .deploy
+  variables:
+    KUBERNETES_NAMESPACE_VALUE: 1v1-frontend-test
+    VERSION_NAME: msb-admin-suggestions-test-v2
+    BASE_VERSION: test_v2
+    KUBECTL_CLI_OPTS_CONFIG: "kubectl --kubeconfig=/home/gitlab-runner/vip-config"
+  only:
+    - test-sug-v2
+  except:
+    - tags
+
+deploy:staging:
+  extends: .deploy
+  variables:
+    PODS: 2
+    KUBERNETES_NAMESPACE_VALUE: 1v1-frontend-prod
+    VERSION_NAME: msb-admin-suggestions-staging
+    BASE_VERSION: staging
+    KUBECTL_CLI_OPTS_CONFIG: "kubectl --kubeconfig=/home/gitlab-runner/vip-config"
+  only:
+    - pre-sug
+  except:
+    - tags
+
+deploy:live:
+  extends: .deploy
+  variables:
+    PODS: 2
+    KUBERNETES_NAMESPACE_VALUE: frontend
+    VERSION_NAME: msb-admin-suggestions
+    BASE_VERSION: product
+    KUBECTL_CLI_OPTS_CONFIG: "kubectl --kubeconfig=/home/gitlab-runner/k8s-live-config"
+  allow_failure: false
+  before_script:
+    - export result=$(echo $DEPLOY_USER | grep $GITLAB_USER_NAME)
+    - if [ "$CI_JOB_NAME" == "deploy:live" -a "$result" == "" ]; then echo '没有权限' && exit 1; fi
+    - bash .bin/check-mr.sh ${CI_COMMIT_SHA}
+  only:
+    - /^msb-admin-suggestions_.*$/
+  except:
+    - branchs
+  when: manual
+
+### merge-request ###
+merge-request:
+  stage: merge-request
+  tags:
+    - msb-fe
+  script:
+    - bash .bin/push-mr.sh ${CI_COMMIT_SHA}
+  only:
+    - /^msb-admin-suggestions_.*$/
+  except:
+    - branchs
